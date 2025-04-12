@@ -1,8 +1,6 @@
-!pip install torch
-
 import streamlit as st
 import numpy as np
-import torch
+# import torch
 import zarr
 from skimage import measure
 import matplotlib.pyplot as plt
