@@ -1,75 +1,63 @@
-import os
-os.system('pip install torch zarr')
-
 import streamlit as st
 import numpy as np
-import torch
-import zarr
-from skimage import measure
+import tensorflow as tf
 import matplotlib.pyplot as plt
-from io import BytesIO
-from PIL import Image
 
-# Load the full PyTorch model
-model = torch.load('unet3d_model.pth', map_location=torch.device('cpu'))
-model.eval()  # Set model to evaluation mode
+# Set Streamlit page config
+st.set_page_config(page_title="3D Tomogram Segmentation", layout="wide")
+st.title("3D Tomogram Segmentation with U-Net (TensorFlow)")
 
-# Function to normalize data
-def min_max_normalize(data, new_min=-1, new_max=1):
-    min_val = data.min()
-    max_val = data.max()
+# Load model
+@st.cache_resource
+def load_model():
+    model = tf.keras.models.load_model("unet3d_model_tf")
+    return model
+
+model = load_model()
+
+# Normalize input volume to [-1, 1]
+def normalize_data(volume):
+    min_val = volume.min()
+    max_val = volume.max()
     if max_val - min_val == 0:
-        return np.zeros_like(data)
-    return (data - min_val) / (max_val - min_val) * (new_max - new_min) + new_min
+        return np.zeros_like(volume)
+    return (volume - min_val) / (max_val - min_val) * 2 - 1
 
-# Function to load and preprocess the Zarr file (tomogram data)
-def load_zarr_data(file_path):
-    zarr_file = zarr.open(file_path, mode='r')
-    data = zarr_file['1'][:]  # Assuming your data is stored under the key '1'
-    return data
+# File uploader
+uploaded_file = st.file_uploader("Upload a 3D tomogram (.npy file)", type=["npy"])
 
-# Function to perform inference
-def run_inference(model, input_data):
-    # Convert input data to PyTorch tensor
-    input_tensor = torch.tensor(input_data, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
+if uploaded_file:
+    volume = np.load(uploaded_file)
+    st.write(f"Volume shape: {volume.shape}")
 
-    # Perform inference
-    with torch.no_grad():
-        output = model(input_tensor)
+    # Normalize and pad input if needed
+    input_volume = normalize_data(volume).astype(np.float32)
+    pad_width = [(0, 0)] * 3
+    for i in range(3):
+        if input_volume.shape[i] % 16 != 0:
+            pad_width[i] = (0, 16 - (input_volume.shape[i] % 16))
+    input_volume = np.pad(input_volume, pad_width, mode='constant', constant_values=0)
 
-    # Get the prediction (assuming binary classification, convert output to binary mask)
-    prediction = output.squeeze().numpy()
-    return prediction
+    # Add batch and channel dimensions
+    input_tensor = np.expand_dims(np.expand_dims(input_volume, axis=0), axis=-1)
 
-# Function to display the 3D volume and slice
-def display_3d_slice(image_data, slice_idx):
-    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-    ax.imshow(image_data[slice_idx, :, :], cmap='gray')
-    ax.axis('off')
+    # Prediction
+    prediction = model.predict(input_tensor)[0, ..., 0]
+
+    # Remove padding
+    for i in range(3):
+        if pad_width[i][1] > 0:
+            prediction = np.take(prediction, indices=range(volume.shape[i]), axis=i)
+
+    # Visualize middle slice
+    st.subheader("Middle Slice Comparison")
+    slice_index = volume.shape[0] // 2
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    axes[0].imshow(volume[slice_index], cmap='gray')
+    axes[0].set_title("Original Tomogram Slice")
+    axes[1].imshow(prediction[slice_index], cmap='viridis')
+    axes[1].set_title("Predicted Mask Slice")
+    for ax in axes:
+        ax.axis('off')
     st.pyplot(fig)
-
-# Streamlit app layout
-st.title("3D Tomogram Prediction Using U-Net")
-
-# Upload Zarr file (tomogram data)
-uploaded_file = st.file_uploader("Upload Zarr File", type=['zarr'])
-if uploaded_file is not None:
-    # Save the uploaded file temporarily
-    with open("temp_data.zarr", "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    
-    # Load the uploaded data
-    data = load_zarr_data("temp_data.zarr")
-
-    # Normalize the data
-    normalized_data = min_max_normalize(data, -1, 1)
-
-    # Run inference
-    prediction = run_inference(model, normalized_data)
-
-    # Display results
-    st.subheader("Predicted 3D Mask")
-
-    # Show a 3D slice of the predicted output
-    slice_idx = st.slider("Select Slice", min_value=0, max_value=prediction.shape[0] - 1, value=prediction.shape[0] // 2)
-    display_3d_slice(prediction, slice_idx)
