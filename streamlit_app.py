@@ -2,7 +2,6 @@ import os
 
 import streamlit as st
 import numpy as np
-import matplotlib.pyplot as plt
 
 # Set Streamlit page config
 st.set_page_config(page_title="3D Tomogram Segmentation", layout="wide")
